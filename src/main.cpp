@@ -9,6 +9,7 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 
+#include "spline.h"
 
 
 using namespace std;
@@ -240,12 +241,13 @@ int main() {
           car_yaw = deg2rad(car_yaw);
 
           int next_wp = NextWaypoint(car_x, car_y, car_yaw, map_waypoints_x, map_waypoints_y);
-          double next_x =map_waypoints_x[next_wp];
-          double next_y =map_waypoints_y[next_wp];
+          double next_x = map_waypoints_x[next_wp] + map_waypoints_dx[next_wp]*6;
+          double next_y = map_waypoints_y[next_wp] + map_waypoints_dy[next_wp]*6;
 
+          double distance = sqrt((car_x-next_x)*(car_x-next_x)+(car_y-next_y)*(car_y-next_y));
           cout << "Current:\t"<< car_x<<",\t" << car_y
           << "\nNext WP:\t"<<next_x<<",\t" << next_y
-          <<"\nDistance:\t"<< sqrt((car_x-next_x)*(car_x-next_x)+(car_y-next_y)*(car_y-next_y))
+          <<"\nDistance:\t"<< distance
           <<"\n----\n";
 
           double speed_lim_mph = 50.0;
@@ -259,12 +261,10 @@ int main() {
           double dist_inc = 0.2;
           for(int i = 0; i < 50; i++)
           {
+
             next_x_vals.push_back(car_x+(dist_inc*i)*cos(traj_slope));
             next_y_vals.push_back(car_y+(dist_inc*i)*sin(traj_slope));
           }
-          next_x_vals.push_back(next_x);
-          next_y_vals.push_back(next_y);
-
 
           // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           msgJson["next_x"] = next_x_vals;
