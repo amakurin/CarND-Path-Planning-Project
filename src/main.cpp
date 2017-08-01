@@ -1,6 +1,6 @@
 
 #include <uWS/uWS.h>
-#include <chrono>
+
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -9,8 +9,11 @@
 #include "json.hpp"
 #include "utils.h"
 #include "map.h"
+#include "vehicle.h"
+#include "trajectory_generator.h"
+#include "matplotlibcpp.h"
 
-#include "spline.h"
+namespace plt = matplotlibcpp;
 
 using namespace std;
 using namespace path_planning;
@@ -37,16 +40,70 @@ string hasData(string s) {
 int main() {
   uWS::Hub h;
 
-  std::vector<double> X(5), Y(5);
-   X[0]=0.1; X[1]=0.4; X[2]=1.2; X[3]=1.8; X[4]=2.0;
-   Y[0]=0.1; Y[1]=0.7; Y[2]=0.6; Y[3]=1.1; Y[4]=0.9;
+  Map map("../data/highway_map.csv");
+ 
+  double v_max = mph2ms(45);
+  double a_max = 10; 
+  double j_max = 10;
 
-   tk::spline s;
-   s.set_points(X,Y);
-  Map map;
-  map.ReadFrom("../data/highway_map.csv");
+  auto sdpoint = map.ToFrenet(909.48, 1128.67, 0);
 
-  h.onMessage([&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
+  double s1 = sdpoint[0];  
+  double sv1 = 0;  
+  double sa1 = 0;  
+
+  int time_horizon = 200;
+  double s2 = s1+10;  
+  double sv2 = v_max;  
+  double sa2 = 0;  
+
+  double dt = 0.02;
+  
+  vector<vector<double>> s_traj;
+  for (int i = 0; i < 1; i++){
+
+    vector<double> is = {s1, sv1, sa1};
+    vector<double> fs = {s2, sv2, sa2};
+    vector<double> lims = {a_max, j_max};
+    s_traj = generate_trajectory_1Dq(is, fs, lims, dt, time_horizon);
+
+    vector<double> s_vals;
+    vector<double> sd_vals;
+    vector<double> sdd_vals;
+    vector<double> sddd_vals;
+
+    vector<double> t_vals;
+    for (int i =0; i < s_traj.size(); i++){
+      cout<<i<<"\tt= "<<i*dt<<"\ts= "<<s_traj[i][0]<<"\tv= "<<s_traj[i][1]
+      <<"\ta= "<<s_traj[i][2]<<"\tj= "<<s_traj[i][3]<<"\n";
+      s_vals.push_back(s_traj[i][0]);
+      sd_vals.push_back(s_traj[i][1]);
+      sdd_vals.push_back(s_traj[i][2]);
+      sddd_vals.push_back(s_traj[i][3]);
+
+      t_vals.push_back(i*dt);
+    }
+
+    plt::subplot(1, 1, 1);
+    plt::title("y(x) Red - traj, Green - v, Blue - a");
+    //plt::axis("equal");
+    plt::plot(t_vals, s_vals, "r-"
+            , t_vals, sd_vals, "g-"
+            , t_vals, sdd_vals, "b-"
+            , t_vals, sddd_vals, "m-");
+
+//    plt::subplot(2, 1, 2);
+//    //plt::axis("equal");
+//    plt::plot(t_vals, d_vals, "r-"
+//            , t_vals, dd_vals, "g-"
+//            , t_vals, ddd_vals, "b-");
+    plt::show();
+  }
+  return 0;
+
+  Vehicle car;
+
+  h.onMessage([&map, &car](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -92,23 +149,83 @@ int main() {
           double next_s = map.maps_s_[next_wp];
 
           double dist = distance(car_x, car_y, next_x, next_y); 
-          cout << "Current XY:\t"<< car_x<<",\t" << car_y
-          << "\nNext WP:\t"<<next_x<<",\t" << next_y
-          << "\nDistance:\t"<< dist
-          << "\nCurrent SD:\t"<< car_s<<",\t" << car_d
-          << "\nNext WP:\t"<<next_s
+
+          vector<double> acc = car.Update(mph2ms(car_speed));
+
+          cout //<< "Current XY:\t"<< car_x<<",\t" << car_y
+          //<< "\nNext WP:\t"<<next_x<<",\t" << next_y
+          //<< "\nDistance:\t"<< dist
+          //<< "\nCurrent SD:\t"<< car_s<<",\t" << car_d
+          //<< "\nNext WP:\t"<<next_s
+          << "\nCurrent Heading:\t"<<car_yaw
+          << "\nCurrent SPEED:\t"<<car_speed
+          //<< "\nCurrent ACCEL:\t"<<acc[1]
+          //<< "\nCurrent LAT:\t"<<acc[0]
+          //<< "\nPREV PATH SIZE:\t"<<previous_path_x.size()
           <<"\n----\n";
 
-          double speed_lim_mph = 50.0;
-          double speed_lim_mps = speed_lim_mph * 0.44704;
+          auto sdpoint = map.ToFrenet(car_x, car_y, car_yaw);
+          auto point = map.ToCartesian(sdpoint[0], sdpoint[1]);
+          //cout << "CALC XY:\t"<< point[0]<<",\t" << point[1]
+          //<<"\n----\n";
+
+
+          double speed_lim_mph = 45.0;
+          double speed_lim_ms = mph2ms(speed_lim_mph);
+
+          int horizon = 50;
+          int n = 10;
+
+          //cout << "prev_size="<<previous_path_x.size()<< "\ttraj_size="<<car.last_trajectory_s_.size()<<'\n';
+          int diff = car.last_trajectory_s_.size() - previous_path_x.size();
+
+          if (diff>0){
+            auto begin = car.last_trajectory_s_.begin();
+            car.last_trajectory_s_.erase(begin, begin + diff);
+            begin = car.last_trajectory_d_.begin();
+            car.last_trajectory_d_.erase(begin, begin + diff);
+          }
+          
+          if (n < car.last_trajectory_s_.size()){
+            car.last_trajectory_s_.erase(car.last_trajectory_s_.begin()+n, car.last_trajectory_s_.end());
+            car.last_trajectory_d_.erase(car.last_trajectory_d_.begin()+n, car.last_trajectory_d_.end());
+          }
+
+          int traj_size = car.last_trajectory_s_.size();
+          vector<double> init_s = {sdpoint[0], 0, 0};
+          vector<double> init_d = {sdpoint[1], 0, 0};
+          if (traj_size > 0){
+            init_s = *(car.last_trajectory_s_.end()-1);
+            init_d = *(car.last_trajectory_d_.end()-1);
+          }
+
+          double dt = 0.02;
+
+          int time_horizon = horizon - traj_size;
+          vector<double> fs = {init_s[0]+speed_lim_ms*dt*time_horizon, speed_lim_ms, 0};
+          vector<vector<double>> s_traj = generate_trajectory_1D(init_s, fs, dt*time_horizon, dt);
+
+          vector<double> fd = {6, 0, 0};
+          vector<vector<double>> d_traj = generate_trajectory_1D(init_d, fd, dt*time_horizon, dt);
+
+          for(int i = 1; i < s_traj.size(); i++)
+          {
+            car.last_trajectory_s_.push_back(s_traj[i]);
+            car.last_trajectory_d_.push_back(d_traj[i]);
+            //cout<<"GEN i="<<i<<"\ts="<<s_traj[i][0]<<"\td="<<d_traj[i][0]<<"\n";
+          }
+          //for(int i = 0; i < horizon - traj_size; i++)
+          //{
+          //  vector<double> s = {init_s[0] + 0.41 * (i + 1), 0, 0};
+          //  car.last_trajectory_s_.push_back(s);
+          //}
 
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          double dist_inc = 0.4;
-          for(int i = 0; i < 50; i++)
-          {
-            auto point = map.ToCartesian(car_s + (dist_inc*i), 6);
+          for (int i = 0; i < car.last_trajectory_s_.size(); i++){
+            auto point = map.ToCartesian(car.last_trajectory_s_[i][0], car.last_trajectory_d_[i][0]);
+            //cout<<"TRAJ XY i="<<i<<"\tx="<<point[0]<<"\ty="<<point[1]<<"\n";
             next_x_vals.push_back(point[0]);
             next_y_vals.push_back(point[1]);
           }
@@ -151,7 +268,8 @@ int main() {
 
   h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
                          char *message, size_t length) {
-    ws.close();
+    // no need to close here Each close raises onDisconnection -> segmentation fault
+    //ws.close();
     std::cout << "Disconnected" << std::endl;
   });
 
